@@ -35,6 +35,14 @@ func (s *Store) SaveVersion(v *model.CollationVersion) error {
 		if !model.VersionStatus(curStatus).CanTransitionTo(v.Status) {
 			return model.StateTransition("校勘版本", curStatus, string(v.Status))
 		}
+		// 不可变契约：已冻结（含被 superseded 的历史冻结）版本的关系快照不得改写。
+		// 既有冻结版本仅允许流转状态（如冻结→替代），写入新 content_json 视为篡改快照。
+		switch model.VersionStatus(curStatus) {
+		case model.VersionFrozen, model.VersionSuperseded:
+			if v.ContentJSON != storedContent {
+				return model.NewDomainError(model.ErrFrozen, "校勘版本 %s 已冻结，快照不可改写", v.ID)
+			}
+		}
 		switch v.Status {
 		case model.VersionFrozen:
 			if v.FrozenAt == nil {

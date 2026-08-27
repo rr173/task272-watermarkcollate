@@ -514,15 +514,8 @@ func (s *Service) ConfirmRelation(id string, adjudicator string, version int) (*
 	if err := s.store.SaveRelation(r); err != nil {
 		return nil, fmt.Errorf("确认纸张关系: %w", err)
 	}
-	vs, _ := s.store.ListVersions(r.ManuscriptID)
-	for _, v := range vs {
-		if v.Status.IsFrozen() {
-			if content, snapErr := s.snapshotRelations(r.ManuscriptID); snapErr == nil {
-				v.ContentJSON = content
-				_ = s.store.SaveVersion(v)
-			}
-		}
-	}
+	// 冻结版本的关系快照不可改写：此处不回写任何已冻结版本。
+	// 新裁决如需进入快照，应通过 SupersedeVersion 产生新版本并在其冻结时固化。
 	return r, nil
 }
 
@@ -616,12 +609,8 @@ func (s *Service) GetVersion(id string) (*model.CollationVersion, error) {
 	if err != nil {
 		return nil, err
 	}
-	if v.Status.IsFrozen() {
-		content, snapErr := s.snapshotRelations(v.ManuscriptID)
-		if snapErr == nil {
-			v.ContentJSON = content
-		}
-	}
+	// 冻结版本的关系快照在冻结时即固化，读取时原样返回，绝不重新生成；
+	// 否则冻结后再改相邻关系裁决，旧快照会被当前关系覆盖，违背不可变契约。
 	return v, nil
 }
 

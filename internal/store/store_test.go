@@ -170,3 +170,64 @@ func TestVersionUniqueNo(t *testing.T) {
 		t.Fatalf("下一版本号应为 2，实际 %d (%v)", no, err)
 	}
 }
+
+// TestFrozenVersionSnapshotImmutable 回归测试：
+// 已冻结版本的关系快照不可改写——同一 frozen 状态下再次 SaveVersion 携带不同
+// content_json 必须被拒绝（FROZEN），保证冻结快照在存储层即被锁定。
+func TestFrozenVersionSnapshotImmutable(t *testing.T) {
+	st := newTestStore(t)
+	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}
+	_ = st.SaveManuscript(m)
+	// 创建并冻结版本：快照为 []。
+	v := &model.CollationVersion{ID: "v1", ManuscriptID: "m1", VersionNo: 1, Status: model.VersionShared, ContentJSON: "[]"}
+	if err := st.SaveVersion(v); err != nil {
+		t.Fatalf("保存草稿版本: %v", err)
+	}
+	v.Status = model.VersionFrozen
+	if err := st.SaveVersion(v); err != nil {
+		t.Fatalf("冻结版本: %v", err)
+	}
+	// 再次保存但篡改 content_json → 必须报 FROZEN。
+	tampered := *v
+	tampered.ContentJSON = `[{"verdict":"tampered"}]`
+	if err := st.SaveVersion(&tampered); err == nil {
+		t.Fatal("篡改冻结快照应被拒绝")
+	} else if de := model.AsDomainError(err); de == nil || de.Code != model.ErrFrozen {
+		t.Fatalf("应返回 FROZEN，实际 %v", err)
+	}
+	// 落库的快照应仍是原值 []。
+	got, err := st.GetVersion("v1")
+	if err != nil {
+		t.Fatalf("读取冻结版本: %v", err)
+	}
+	if got.ContentJSON != "[]" {
+		t.Fatalf("冻结快照被篡改：期望 []，实际 %s", got.ContentJSON)
+	}
+}
+
+// TestSupersedeKeepsFrozenSnapshot 回归测试：
+// 已冻结版本被 supersede 时不得改写快照——状态迁移允许但 content_json 必须保持不变。
+func TestSupersedeKeepsFrozenSnapshot(t *testing.T) {
+	st := newTestStore(t)
+	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}
+	_ = st.SaveManuscript(m)
+	v := &model.CollationVersion{ID: "v1", ManuscriptID: "m1", VersionNo: 1, Status: model.VersionFrozen, ContentJSON: "[]"}
+	if err := st.SaveVersion(v); err != nil {
+		t.Fatalf("保存冻结版本: %v", err)
+	}
+	// supersede：状态迁移 frozen → superseded，content_json 未变，应成功且快照保持。
+	v.Status = model.VersionSuperseded
+	if err := st.SaveVersion(v); err != nil {
+		t.Fatalf("替代冻结版本应允许状态迁移: %v", err)
+	}
+	got, err := st.GetVersion("v1")
+	if err != nil {
+		t.Fatalf("读取替代版本: %v", err)
+	}
+	if got.Status != model.VersionSuperseded {
+		t.Fatalf("状态应为 superseded，实际 %s", got.Status)
+	}
+	if got.ContentJSON != "[]" {
+		t.Fatalf("替代不应改写快照：期望 []，实际 %s", got.ContentJSON)
+	}
+}
