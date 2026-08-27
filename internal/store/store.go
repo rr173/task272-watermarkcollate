@@ -7,17 +7,17 @@ import (
 	"sync"
 	"time"
 
-	"task272-watermarkcollate/internal/model"
-
 	_ "modernc.org/sqlite"
 )
 
 // Store 封装 SQLite 连接与幂等迁移。
 // 单连接 + 互斥锁串行化写入，规避 SQLite 单写者限制；WAL 与 busy_timeout 保证重启后一致恢复。
+// 列表查询（ListLeaves 等）一律直读数据库，不复用任何内存缓存：
+// 纸页状态一旦落库即须对折页连续性校验等下游即时可见，缓存会掩盖待解析→有效等迁移，
+// 也会在并发写入时引发 map 竞态，故此处不持有任何列表快照缓存。
 type Store struct {
-	db        *sql.DB
-	mu        sync.Mutex
-	leafCache map[string][]*model.Leaf
+	db *sql.DB
+	mu sync.Mutex
 }
 
 // Open 打开（必要时创建）数据库文件并执行幂等迁移。
@@ -34,7 +34,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("打开 sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, leafCache: map[string][]*model.Leaf{}}
+	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err

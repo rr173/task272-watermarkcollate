@@ -57,10 +57,10 @@ func (s *Store) GetLeaf(id string) (*model.Leaf, error) {
 }
 
 // ListLeaves 列出某手稿的全部纸页（按折页号、页号排序）。
+// 直读数据库最新已提交状态，不复用任何内存缓存：
+// 纸页状态（待解析→有效等）落库后须对折页连续性校验等下游即时可见，
+// 缓存会掩盖状态迁移，并在并发写入时引发 map 竞态导致列表错乱。
 func (s *Store) ListLeaves(manuscriptID string) ([]*model.Leaf, error) {
-	if cached, ok := s.leafCache[manuscriptID]; ok {
-		return cached, nil
-	}
 	rows, err := s.db.Query(`SELECT id,manuscript_id,page_no,quire_no,position,status,binding_edge,chain_deg,width_mm,height_mm,confidence,notes,version,created_at,updated_at FROM leaves WHERE manuscript_id=? ORDER BY quire_no,page_no`, manuscriptID)
 	if err != nil {
 		return nil, err
@@ -77,7 +77,6 @@ func (s *Store) ListLeaves(manuscriptID string) ([]*model.Leaf, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	s.leafCache[manuscriptID] = out
 	return out, nil
 }
 

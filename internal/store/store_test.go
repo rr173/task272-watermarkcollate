@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sync"
 	"testing"
 
 	"task272-watermarkcollate/internal/model"
@@ -85,6 +86,97 @@ func TestLeafStateTransition(t *testing.T) {
 	if err := st.SaveLeaf(l); err == nil {
 		t.Fatal("excluded→excluded 应报错（终态不可迁移）")
 	}
+}
+
+// TestListLeavesReflectsLatestStatus 回归：纸页状态落库后 ListLeaves 必须立即读到新状态，
+// 不能复用落库前的过期缓存。曾存在按手稿缓存纸页列表的实现，pending→valid 迁移后
+// 仍返回旧状态，导致折页连续性校验把刚生效的纸页当成未参与而误报断裂。
+func TestListLeavesReflectsLatestStatus(t *testing.T) {
+	st := newTestStore(t)
+	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}
+	_ = st.SaveManuscript(m)
+	l := &model.Leaf{ID: "l1", ManuscriptID: "m1", PageNo: 1, QuireNo: 1, Position: model.PositionRecto,
+		Status: model.LeafPending, BindingEdge: model.EdgeLeft, ChainDeg: 90, WidthMM: 160, HeightMM: 220, Confidence: 0.9, Version: 1}
+	if err := st.SaveLeaf(l); err != nil {
+		t.Fatalf("保存纸页: %v", err)
+	}
+	// 预热：首次读取把列表「读入缓存」（若有缓存）。
+	got, err := st.ListLeaves("m1")
+	if err != nil {
+		t.Fatalf("首次列出纸页: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != model.LeafPending {
+		t.Fatalf("首次读取状态错误: %+v", got)
+	}
+	// 状态迁移落库：pending → valid。
+	l.Status = model.LeafValid
+	if err := st.SaveLeaf(l); err != nil {
+		t.Fatalf("pending→valid 应允许: %v", err)
+	}
+	// 再次列出必须读到最新落库状态 valid，而非过期缓存里的 pending。
+	got, err = st.ListLeaves("m1")
+	if err != nil {
+		t.Fatalf("迁移后列出纸页: %v", err)
+	}
+	if len(got) != 1 || got[0].Status != model.LeafValid || got[0].Version != 2 {
+		t.Fatalf("ListLeaves 未反映最新落库状态，可能复用了过期缓存: %+v", got)
+	}
+}
+
+// TestListLeavesConcurrentNoCorruption 回归：并发改状态 + 列表读取不应错乱。
+// 曾存在无锁 map 缓存，与写入 SaveLeaf 并发时触发「concurrent map read and map write」
+// 致列表错乱或崩溃；移除缓存后每次都直读数据库，读写经 SetMaxOpenConns(1) 串行化。
+func TestListLeavesConcurrentNoCorruption(t *testing.T) {
+	st := newTestStore(t)
+	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}
+	_ = st.SaveManuscript(m)
+	leaf := &model.Leaf{ID: "l1", ManuscriptID: "m1", PageNo: 1, QuireNo: 1, Position: model.PositionRecto,
+		Status: model.LeafPending, BindingEdge: model.EdgeLeft, ChainDeg: 90, WidthMM: 160, HeightMM: 220, Confidence: 0.9, Version: 1}
+	if err := st.SaveLeaf(leaf); err != nil {
+		t.Fatalf("保存纸页: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+	// 读取方：持续列出纸页，迁移期间每份列表必须自洽（非空且单页）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			got, err := st.ListLeaves("m1")
+			if err != nil {
+				t.Errorf("并发列出纸页失败: %v", err)
+				return
+			}
+			if len(got) != 1 {
+				t.Errorf("并发列表长度错乱: 期望 1，得到 %d", len(got))
+				return
+			}
+		}
+	}()
+	// 写入方：在 valid / pending 之间反复迁移（valid→damaged→valid 合法链）。
+	cur := leaf
+	for i := 0; i < 50; i++ {
+		next := model.LeafDamaged
+		if i%2 == 1 {
+			next = model.LeafValid
+		}
+		if !cur.Status.CanTransitionTo(next) {
+			t.Fatalf("非法迁移 %s→%s", cur.Status, next)
+		}
+		cur.Status = next
+		if err := st.SaveLeaf(cur); err != nil {
+			t.Errorf("并发迁移落库失败: %v", err)
+			break
+		}
+	}
+	close(done)
+	wg.Wait()
 }
 
 func TestWatermarkUniqueHalf(t *testing.T) {
