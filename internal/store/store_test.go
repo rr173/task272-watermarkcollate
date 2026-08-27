@@ -153,6 +153,89 @@ func TestRelationUniquePair(t *testing.T) {
 	}
 }
 
+// TestRelationGapReasonsIndependent 验证每条关系的 GapReasons 是独立副本：
+// 列出多条关系后，改其中一条的断裂原因，其余关系不得跟着变。
+func TestRelationGapReasonsIndependent(t *testing.T) {
+	st := newTestStore(t)
+	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}
+	_ = st.SaveManuscript(m)
+	// 三页：l1/l2 同折页连续、l2/l3 折页跳变、l1/l3 页码跳变，给出不同的断裂原因。
+	l1 := &model.Leaf{ID: "l1", ManuscriptID: "m1", PageNo: 1, QuireNo: 1, Position: model.PositionRecto,
+		Status: model.LeafValid, BindingEdge: model.EdgeLeft, ChainDeg: 90, WidthMM: 160, HeightMM: 220, Confidence: 0.9, Version: 1}
+	l2 := &model.Leaf{ID: "l2", ManuscriptID: "m1", PageNo: 2, QuireNo: 2, Position: model.PositionVerso,
+		Status: model.LeafValid, BindingEdge: model.EdgeRight, ChainDeg: 90, WidthMM: 160, HeightMM: 220, Confidence: 0.9, Version: 1}
+	l3 := &model.Leaf{ID: "l3", ManuscriptID: "m1", PageNo: 4, QuireNo: 2, Position: model.PositionRecto,
+		Status: model.LeafValid, BindingEdge: model.EdgeLeft, ChainDeg: 90, WidthMM: 160, HeightMM: 220, Confidence: 0.9, Version: 1}
+	_ = st.SaveLeaf(l1)
+	_ = st.SaveLeaf(l2)
+	_ = st.SaveLeaf(l3)
+
+	rels := []*model.LeafRelation{
+		{ID: "r12", ManuscriptID: "m1", LeftLeafID: "l1", RightLeafID: "l2", PageDelta: 1,
+			GapReasons: []string{"quire_jump"}, Verdict: model.VerdictCandidate, Version: 1},
+		{ID: "r23", ManuscriptID: "m1", LeftLeafID: "l2", RightLeafID: "l3", PageDelta: 2,
+			GapReasons: []string{"page_gap"}, Verdict: model.VerdictCandidate, Version: 1},
+	}
+	for _, r := range rels {
+		if err := st.SaveRelation(r); err != nil {
+			t.Fatalf("保存关系 %s: %v", r.ID, err)
+		}
+	}
+
+	got, err := st.ListRelations("m1")
+	if err != nil {
+		t.Fatalf("列出关系: %v", err)
+	}
+	// 找到 r12 与 r23，记下各自的断裂原因。
+	var r12, r23 *model.LeafRelation
+	for _, r := range got {
+		switch r.ID {
+		case "r12":
+			r12 = r
+		case "r23":
+			r23 = r
+		}
+	}
+	if r12 == nil || r23 == nil {
+		t.Fatalf("应列出 r12 与 r23，实际 %+v", got)
+	}
+	if len(r12.GapReasons) != 1 || r12.GapReasons[0] != "quire_jump" {
+		t.Fatalf("r12 断裂原因应为 [quire_jump]，实际 %v", r12.GapReasons)
+	}
+	if len(r23.GapReasons) != 1 || r23.GapReasons[0] != "page_gap" {
+		t.Fatalf("r23 断裂原因应为 [page_gap]，实际 %v", r23.GapReasons)
+	}
+
+	// 改其中一条的断裂原因，另一条不得跟着变。
+	r12.GapReasons[0] = "page_gap"
+	if r23.GapReasons[0] != "page_gap" {
+		t.Fatalf("改 r12 的断裂原因后 r23 被牵连：%v（应为 page_gap 不变）", r23.GapReasons)
+	}
+	// 追加也应只影响自身。
+	r12.GapReasons = append(r12.GapReasons, "quire_jump")
+	if len(r23.GapReasons) != 1 {
+		t.Fatalf("追加 r12 后 r23 长度被牵连：%v", r23.GapReasons)
+	}
+
+	// 重新读取，确认落库值仍独立。
+	got2, err := st.ListRelations("m1")
+	if err != nil {
+		t.Fatalf("重新列出关系: %v", err)
+	}
+	for _, r := range got2 {
+		switch r.ID {
+		case "r12":
+			if len(r.GapReasons) != 1 || r.GapReasons[0] != "quire_jump" {
+				t.Fatalf("r12 落库断裂原因应为 [quire_jump]，实际 %v", r.GapReasons)
+			}
+		case "r23":
+			if len(r.GapReasons) != 1 || r.GapReasons[0] != "page_gap" {
+				t.Fatalf("r23 落库断裂原因应为 [page_gap]，实际 %v", r.GapReasons)
+			}
+		}
+	}
+}
+
 func TestVersionUniqueNo(t *testing.T) {
 	st := newTestStore(t)
 	m := &model.Manuscript{ID: "m1", Title: "残卷", Status: model.ManuscriptOrganizing, Version: 1}

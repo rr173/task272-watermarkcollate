@@ -229,14 +229,19 @@ func scanRelation(row *sql.Row) (*model.LeafRelation, error) {
 	return r, nil
 }
 
-var gapScratch []string
-
+// decodeGapReasons 解码断裂原因切片。
+// 注意：必须返回独立分配的新切片，不得复用包级共享底层数组——
+// 否则 ListRelations 返回的多条关系的 GapReasons 会指向同一底层数组，
+// 改其中一条的断裂原因会牵连其余关系一起变化。
 func decodeGapReasons(gapJSON string) []string {
-	gapScratch = gapScratch[:0]
-	if gapJSON != "" {
-		_ = json.Unmarshal([]byte(gapJSON), &gapScratch)
+	if gapJSON == "" {
+		return nil
 	}
-	return gapScratch
+	var out []string
+	if err := json.Unmarshal([]byte(gapJSON), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func scanRelationRows(row leafScanner) (*model.LeafRelation, error) {
