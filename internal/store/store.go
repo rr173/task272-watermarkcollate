@@ -172,6 +172,9 @@ func (s *Store) WithTx(fn func(tx *sql.Tx) error) error {
 	if err != nil {
 		return err
 	}
+	// defer Rollback 保证 fn 失败或 panic 时事务被回滚、连接归还池；
+	// Commit 成功后 Rollback 为 no-op，不影响已提交事务。
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
 		return err
 	}
