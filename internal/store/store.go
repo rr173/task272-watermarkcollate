@@ -164,17 +164,20 @@ CREATE INDEX IF NOT EXISTS idx_versions_manuscript ON collation_versions(manuscr
 }
 
 // WithTx 在互斥锁保护的事务中执行 fn。
-// 锁覆盖整个 Begin/fn/Commit，避免 SQLite 单写者与乐观锁检查窗口被并发切开；
+// 锁覆盖整个 Begin/fn/Commit，避免 SQLite 单写者与乐观锁检查窗口被并发切开：
+// 同一时刻只有一个写事务在途，既消除 SQLite 写锁竞争，又让「读版本→校验→改版本」成为原子操作，
+// 否则并发写者会互相踩踏：要么读到同一版本后双双 UPDATE（乐观锁失效、更新丢失），
+// 要么多个事务争抢唯一写槽而触发 SQLITE_BUSY，导致部分登记失败甚至整库卡死。
 // defer Rollback 保证 fn 失败或 panic 时事务被释放，Commit 成功后 Rollback 成为 no-op。
 func (s *Store) WithTx(fn func(tx *sql.Tx) error) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
-	s.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("开启事务: %w", err)
 	}
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
 		return err
 	}
 	if err := tx.Commit(); err != nil {
