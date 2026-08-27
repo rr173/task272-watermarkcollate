@@ -81,19 +81,25 @@ func (s *Service) recoverPairings(ctx context.Context, m *model.Manuscript) (int
 			if a.leaf.ID == b.leaf.ID {
 				continue
 			}
+			// 幂等：配对已存在则跳过，不改写既有裁决；
+			// 查找出错（非 NOT_FOUND）须上报，不得吞掉——否则缺失配对补不齐却误报成功。
 			_, err := s.store.FindPairingByWatermarks(a.w.ID, b.w.ID)
-			if err != nil {
+			if err == nil {
 				continue
 			}
+			if !model.IsNotFound(err) {
+				return created, fmt.Errorf("查找既有配对 %s/%s 以恢复: %w", a.w.ID, b.w.ID, err)
+			}
+			// NOT_FOUND 即尚无配对 → 补齐候选。Pair 失败属领域异常，不得吞掉。
 			p, err := watermark.Pair(a.w, b.w, a.leaf.WidthMM)
 			if err != nil {
-				continue
+				return created, fmt.Errorf("计算恢复配对 %s/%s: %w", a.w.ID, b.w.ID, err)
 			}
 			p.ID = genID()
 			p.ManuscriptID = m.ID
 			p.Version = 1
 			if err := s.store.SavePairing(p); err != nil {
-				continue
+				return created, fmt.Errorf("保存恢复配对 %s/%s: %w", a.w.ID, b.w.ID, err)
 			}
 			created++
 		}
