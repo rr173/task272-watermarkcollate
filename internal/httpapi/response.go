@@ -23,7 +23,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeErr 将错误映射为 HTTP 响应。
 // 沿错误链解开领域错误（支持 %w 包装），按其 Code 映射状态码；未知错误一律 500。
 func writeErr(w http.ResponseWriter, err error) {
-	de, _ := err.(*model.DomainError)
+	de := model.AsDomainError(err)
 	if de != nil {
 		status := http.StatusInternalServerError
 		switch de.Code {

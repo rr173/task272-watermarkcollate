@@ -58,12 +58,13 @@ func IsDomainError(err error) bool {
 	return AsDomainError(err) != nil
 }
 
-// AsDomainError 从错误链中取出领域错误；不存在则返回 nil。
+// AsDomainError 从错误链中取出领域错误（支持 fmt.Errorf("...: %w", err) 包装）；
+// 不存在则返回 nil。供 HTTP 层据此映射状态码，避免领域冲突被降级为内部错误。
 func AsDomainError(err error) *DomainError {
-	if de, ok := err.(*DomainError); ok {
+	var de *DomainError
+	if errors.As(err, &de) {
 		return de
 	}
-	_ = errors.Unwrap(err)
 	return nil
 }
 

@@ -124,7 +124,7 @@ func (s *Service) AddLeaf(m *model.Manuscript, l *model.Leaf) (*model.Leaf, erro
 	l.Status = model.LeafPending
 	l.Version = 1
 	if err := s.store.SaveLeaf(l); err != nil {
-		return nil, fmt.Errorf("保存纸页: %v", err)
+		return nil, fmt.Errorf("保存纸页: %w", err)
 	}
 	return l, nil
 }
@@ -256,7 +256,7 @@ func (s *Service) RequestPairing(ctx context.Context, m *model.Manuscript, aID, 
 	p.ManuscriptID = m.ID
 	p.Version = 1
 	if err := s.store.SavePairing(p); err != nil {
-		return nil, fmt.Errorf("保存水印配对: %v", err)
+		return nil, fmt.Errorf("保存水印配对: %w", err)
 	}
 	return p, nil
 }
